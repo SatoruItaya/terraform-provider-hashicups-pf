@@ -87,6 +87,73 @@ type resourceOrder struct {
 
 // Create a new resource
 func (r resourceOrder) Create(ctx context.Context, req tfsdk.CreateResourceRequest, resp *tfsdk.CreateResourceResponse) {
+
+    if !r.p.configured {
+        resp.Diagnostics.AddError(
+            "Provider not configured",
+            "The provider hasn't been configured before apply, likely because it depends on an unknown value from another resource. This leads to weird stuff happening, so we'd prefer if you didn't do that. Thanks!",
+        )
+        return
+    }
+
+    // Retrieve values from plan
+    var plan Order
+    diags := req.Plan.Get(ctx, &plan)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
+    // Generate API request body from plan
+    var items []hashicups.OrderItem
+    for _, item := range plan.Items {
+        items = append(items, hashicups.OrderItem{
+            Coffee: hashicups.Coffee{
+                ID: item.Coffee.ID,
+            },
+            Quantity: item.Quantity,
+        })
+    }
+
+    // Create new order
+    order, err := r.p.client.CreateOrder(items)
+    if err != nil {
+        resp.Diagnostics.AddError(
+            "Error creating order",
+            "Could not create order, unexpected error: "+err.Error(),
+        )
+        return
+    }
+
+    // Map response body to resource schema attribute
+    var ois []OrderItem
+    for _, oi := range order.Items {
+        ois = append(ois, OrderItem{
+            Coffee: Coffee{
+                ID:          oi.Coffee.ID,
+                Name:        types.String{Value: oi.Coffee.Name},
+                Teaser:      types.String{Value: oi.Coffee.Teaser},
+                Description: types.String{Value: oi.Coffee.Description},
+                Price:       types.Number{Value: big.NewFloat(oi.Coffee.Price)},
+                Image:       types.String{Value: oi.Coffee.Image},
+            },
+            Quantity: oi.Quantity,
+        })
+    }
+
+    // Generate resource state struct
+    var result = Order{
+        ID:          types.String{Value: strconv.Itoa(order.ID)},
+        Items:       ois,
+        LastUpdated: types.String{Value: string(time.Now().Format(time.RFC850))},
+    }
+
+    diags = resp.State.Set(ctx, result)
+    resp.Diagnostics.Append(diags...)
+    if resp.Diagnostics.HasError() {
+        return
+    }
+
 }
 
 // Read resource information
